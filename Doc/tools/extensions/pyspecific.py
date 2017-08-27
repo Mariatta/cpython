@@ -15,14 +15,15 @@ from os import path
 from time import asctime
 from pprint import pformat
 from docutils.io import StringOutput
+from docutils.parsers.rst import Directive
 from docutils.utils import new_document
 
 from docutils import nodes, utils
 
 from sphinx import addnodes
 from sphinx.builders import Builder
+from sphinx.locale import translators
 from sphinx.util.nodes import split_explicit_title
-from sphinx.util.compat import Directive
 from sphinx.writers.html import HTMLTranslator
 from sphinx.writers.text import TextWriter
 from sphinx.writers.latex import LaTeXTranslator
@@ -103,16 +104,25 @@ class ImplementationDetail(Directive):
     optional_arguments = 1
     final_argument_whitespace = True
 
+    # This text is copied to templates/dummy.html
+    label_text = 'CPython implementation detail:'
+
     def run(self):
         pnode = nodes.compound(classes=['impl-detail'])
+        label = translators['sphinx'].gettext(self.label_text)
         content = self.content
-        add_text = nodes.strong('CPython implementation detail:',
-                                'CPython implementation detail:')
+        add_text = nodes.strong(label, label)
         if self.arguments:
             n, m = self.state.inline_text(self.arguments[0], self.lineno)
             pnode.append(nodes.paragraph('', '', *(n + m)))
         self.state.nested_parse(content, self.content_offset, pnode)
         if pnode.children and isinstance(pnode[0], nodes.paragraph):
+            content = nodes.inline(pnode[0].rawsource, translatable=True)
+            content.source = pnode[0].source
+            content.line = pnode[0].line
+            content += pnode[0].children
+            pnode[0].replace_self(nodes.paragraph('', '', content,
+                                                  translatable=False))
             pnode[0].insert(0, add_text)
             pnode[0].insert(1, nodes.Text(' '))
         else:

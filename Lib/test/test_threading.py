@@ -470,13 +470,15 @@ class ThreadTests(BaseTestCase):
         for i in range(20):
             t = threading.Thread(target=lambda: None)
             t.start()
-            self.addCleanup(t.join)
             pid = os.fork()
             if pid == 0:
-                os._exit(1 if t.is_alive() else 0)
+                os._exit(11 if t.is_alive() else 10)
             else:
+                t.join()
+
                 pid, status = os.waitpid(pid, 0)
-                self.assertEqual(0, status)
+                self.assertTrue(os.WIFEXITED(status))
+                self.assertEqual(10, os.WEXITSTATUS(status))
 
     def test_main_thread(self):
         main = threading.main_thread()
@@ -1064,6 +1066,8 @@ class ThreadingExceptionTests(BaseTestCase):
         thread.join()
         self.assertIsNotNone(thread.exc)
         self.assertIsInstance(thread.exc, RuntimeError)
+        # explicitly break the reference cycle to not leak a dangling thread
+        thread.exc = None
 
 class TimerTests(BaseTestCase):
 

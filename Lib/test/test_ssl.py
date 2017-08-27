@@ -2065,7 +2065,7 @@ if _have_threads:
 
         class EchoServer (asyncore.dispatcher):
 
-            class ConnectionHandler (asyncore.dispatcher_with_send):
+            class ConnectionHandler(asyncore.dispatcher_with_send):
 
                 def __init__(self, conn, certfile):
                     self.socket = test_wrap_socket(conn, server_side=True,
@@ -2156,6 +2156,8 @@ if _have_threads:
             self.join()
             if support.verbose:
                 sys.stdout.write(" cleanup: successfully joined.\n")
+            # make sure that ConnectionHandler is removed from socket_map
+            asyncore.close_all(ignore_all=True)
 
         def start (self, flag=None):
             self.flag = flag
@@ -3256,8 +3258,9 @@ if _have_threads:
                 except ssl.SSLError as e:
                     stats = e
 
-                if expected is None and IS_OPENSSL_1_1:
-                    # OpenSSL 1.1.0 raises handshake error
+                if (expected is None and IS_OPENSSL_1_1
+                        and ssl.OPENSSL_VERSION_INFO < (1, 1, 0, 6)):
+                    # OpenSSL 1.1.0 to 1.1.0e raises handshake error
                     self.assertIsInstance(stats, ssl.SSLError)
                 else:
                     msg = "failed trying %s (s) and %s (c).\n" \

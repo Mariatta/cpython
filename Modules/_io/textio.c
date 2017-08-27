@@ -538,6 +538,12 @@ _io_IncrementalNewlineDecoder_getstate_impl(nldecoder_object *self)
            _PyIO_str_getstate, NULL);
         if (state == NULL)
             return NULL;
+        if (!PyTuple_Check(state)) {
+            PyErr_SetString(PyExc_TypeError,
+                            "illegal decoder state");
+            Py_DECREF(state);
+            return NULL;
+        }
         if (!PyArg_ParseTuple(state, "OK", &buffer, &flag)) {
             Py_DECREF(state);
             return NULL;
@@ -569,6 +575,10 @@ _io_IncrementalNewlineDecoder_setstate(nldecoder_object *self,
     PyObject *buffer;
     unsigned long long flag;
 
+    if (!PyTuple_Check(state)) {
+        PyErr_SetString(PyExc_TypeError, "state argument must be a tuple");
+        return NULL;
+    }
     if (!PyArg_ParseTuple(state, "OK", &buffer, &flag))
         return NULL;
 
@@ -1321,6 +1331,13 @@ _io_TextIOWrapper_write_impl(textio *self, PyObject *text)
     Py_DECREF(text);
     if (b == NULL)
         return NULL;
+    if (!PyBytes_Check(b)) {
+        PyErr_Format(PyExc_TypeError,
+                     "encoder should return a bytes object, not '%.200s'",
+                     Py_TYPE(b)->tp_name);
+        Py_DECREF(b);
+        return NULL;
+    }
 
     if (self->pending_bytes == NULL) {
         self->pending_bytes = PyList_New(0);
@@ -2320,6 +2337,12 @@ _io_TextIOWrapper_tell_impl(textio *self)
             _PyIO_str_getstate, NULL); \
         if (_state == NULL) \
             goto fail; \
+        if (!PyTuple_Check(_state)) { \
+            PyErr_SetString(PyExc_TypeError, \
+                            "illegal decoder state"); \
+            Py_DECREF(_state); \
+            goto fail; \
+        } \
         if (!PyArg_ParseTuple(_state, "Oi", &dec_buffer, &dec_flags)) { \
             Py_DECREF(_state); \
             goto fail; \
@@ -2483,6 +2506,7 @@ static PyObject *
 textiowrapper_repr(textio *self)
 {
     PyObject *nameobj, *modeobj, *res, *s;
+    int status;
 
     CHECK_INITIALIZED(self);
 
@@ -2490,6 +2514,15 @@ textiowrapper_repr(textio *self)
     if (res == NULL)
         return NULL;
 
+    status = Py_ReprEnter((PyObject *)self);
+    if (status != 0) {
+        if (status > 0) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "reentrant call inside %s.__repr__",
+                         Py_TYPE(self)->tp_name);
+        }
+        goto error;
+    }
     nameobj = _PyObject_GetAttrId((PyObject *) self, &PyId_name);
     if (nameobj == NULL) {
         if (PyErr_ExceptionMatches(PyExc_Exception))
@@ -2504,7 +2537,7 @@ textiowrapper_repr(textio *self)
             goto error;
         PyUnicode_AppendAndDel(&res, s);
         if (res == NULL)
-            return NULL;
+            goto error;
     }
     modeobj = _PyObject_GetAttrId((PyObject *) self, &PyId_mode);
     if (modeobj == NULL) {
@@ -2520,14 +2553,21 @@ textiowrapper_repr(textio *self)
             goto error;
         PyUnicode_AppendAndDel(&res, s);
         if (res == NULL)
-            return NULL;
+            goto error;
     }
     s = PyUnicode_FromFormat("%U encoding=%R>",
                              res, self->encoding);
     Py_DECREF(res);
+    if (status == 0) {
+        Py_ReprLeave((PyObject *)self);
+    }
     return s;
-error:
+
+  error:
     Py_XDECREF(res);
+    if (status == 0) {
+        Py_ReprLeave((PyObject *)self);
+    }
     return NULL;
 }
 

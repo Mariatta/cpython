@@ -686,6 +686,53 @@ ImportError_str(PyImportErrorObject *self)
     }
 }
 
+static PyObject *
+ImportError_getstate(PyImportErrorObject *self)
+{
+    PyObject *dict = ((PyBaseExceptionObject *)self)->dict;
+    if (self->name || self->path) {
+        _Py_IDENTIFIER(name);
+        _Py_IDENTIFIER(path);
+        dict = dict ? PyDict_Copy(dict) : PyDict_New();
+        if (dict == NULL)
+            return NULL;
+        if (self->name && _PyDict_SetItemId(dict, &PyId_name, self->name) < 0) {
+            Py_DECREF(dict);
+            return NULL;
+        }
+        if (self->path && _PyDict_SetItemId(dict, &PyId_path, self->path) < 0) {
+            Py_DECREF(dict);
+            return NULL;
+        }
+        return dict;
+    }
+    else if (dict) {
+        Py_INCREF(dict);
+        return dict;
+    }
+    else {
+        Py_RETURN_NONE;
+    }
+}
+
+/* Pickling support */
+static PyObject *
+ImportError_reduce(PyImportErrorObject *self)
+{
+    PyObject *res;
+    PyObject *args;
+    PyObject *state = ImportError_getstate(self);
+    if (state == NULL)
+        return NULL;
+    args = ((PyBaseExceptionObject *)self)->args;
+    if (state == Py_None)
+        res = PyTuple_Pack(2, Py_TYPE(self), args);
+    else
+        res = PyTuple_Pack(3, Py_TYPE(self), args, state);
+    Py_DECREF(state);
+    return res;
+}
+
 static PyMemberDef ImportError_members[] = {
     {"msg", T_OBJECT, offsetof(PyImportErrorObject, msg), 0,
         PyDoc_STR("exception message")},
@@ -697,6 +744,7 @@ static PyMemberDef ImportError_members[] = {
 };
 
 static PyMethodDef ImportError_methods[] = {
+    {"__reduce__", (PyCFunction)ImportError_reduce, METH_NOARGS},
     {NULL}
 };
 
@@ -1308,11 +1356,16 @@ SyntaxError_init(PySyntaxErrorObject *self, PyObject *args, PyObject *kwds)
 
         Py_DECREF(info);
 
-        /* Issue #21669: Custom error for 'print' & 'exec' as statements */
-        if (self->text && PyUnicode_Check(self->text)) {
-            if (_report_missing_parentheses(self) < 0) {
-                return -1;
-            }
+        /*
+         * Issue #21669: Custom error for 'print' & 'exec' as statements
+         *
+         * Only applies to SyntaxError instances, not to subclasses such
+         * as TabError or IndentationError (see issue #31161)
+         */
+        if ((PyObject*)Py_TYPE(self) == PyExc_SyntaxError &&
+                self->text && PyUnicode_Check(self->text) &&
+                _report_missing_parentheses(self) < 0) {
+            return -1;
         }
     }
     return 0;
@@ -2833,6 +2886,49 @@ _PyErr_TrySetFromCause(const char *format, ...)
  * or minus, using the stream redirection syntax).
  */
 
+
+// Static helper for setting legacy print error message
+static int
+_set_legacy_print_statement_msg(PySyntaxErrorObject *self, Py_ssize_t start)
+{
+    PyObject *strip_sep_obj = PyUnicode_FromString(" \t\r\n");
+    if (strip_sep_obj == NULL)
+        return -1;
+
+    // PRINT_OFFSET is to remove `print ` word from the data.
+    const int PRINT_OFFSET = 6;
+    Py_ssize_t text_len = PyUnicode_GET_LENGTH(self->text);
+    PyObject *data = PyUnicode_Substring(self->text, PRINT_OFFSET, text_len);
+
+    if (data == NULL) {
+        Py_DECREF(strip_sep_obj);
+        return -1;
+    }
+    PyObject *new_data = _PyUnicode_XStrip(data, 2, strip_sep_obj);
+    Py_DECREF(data);
+    Py_DECREF(strip_sep_obj);
+
+    if (new_data == NULL) {
+        return -1;
+    }
+    // gets the modified text_len after stripping `print `
+    text_len = PyUnicode_GET_LENGTH(new_data);
+    const char *maybe_end_arg = "";
+    if (text_len > 0 && PyUnicode_READ_CHAR(new_data, text_len-1) == ',') {
+        maybe_end_arg = " end=\" \"";
+    }
+    PyObject *error_msg = PyUnicode_FromFormat(
+        "Missing parentheses in call to 'print'. Did you mean print(%U%s)?",
+        new_data, maybe_end_arg
+    );
+    Py_DECREF(new_data);
+    if (error_msg == NULL)
+        return -1;
+
+    Py_XSETREF(self->msg, error_msg);
+    return 1;
+}
+
 static int
 _check_for_legacy_statements(PySyntaxErrorObject *self, Py_ssize_t start)
 {
@@ -2868,9 +2964,8 @@ _check_for_legacy_statements(PySyntaxErrorObject *self, Py_ssize_t start)
     }
     if (PyUnicode_Tailmatch(self->text, print_prefix,
                             start, text_len, -1)) {
-        Py_XSETREF(self->msg,
-                  PyUnicode_FromString("Missing parentheses in call to 'print'"));
-        return 1;
+
+        return _set_legacy_print_statement_msg(self, start);
     }
 
     /* Check for legacy exec statements */

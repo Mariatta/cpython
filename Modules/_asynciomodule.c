@@ -305,6 +305,8 @@ future_add_done_callback(FutureObj *fut, PyObject *arg)
 static PyObject *
 future_cancel(FutureObj *fut)
 {
+    fut->fut_log_tb = 0;
+
     if (fut->fut_state != STATE_PENDING) {
         Py_RETURN_FALSE;
     }
@@ -529,9 +531,16 @@ _asyncio_Future_remove_done_callback(FutureObj *self, PyObject *fn)
             goto fail;
         }
         if (ret == 0) {
-            Py_INCREF(item);
-            PyList_SET_ITEM(newlist, j, item);
-            j++;
+            if (j < len) {
+                Py_INCREF(item);
+                PyList_SET_ITEM(newlist, j, item);
+                j++;
+            }
+            else {
+                if (PyList_Append(newlist, item)) {
+                    goto fail;
+                }
+            }
         }
     }
 
@@ -636,6 +645,17 @@ FutureObj_get_log_traceback(FutureObj *fut)
     else {
         Py_RETURN_FALSE;
     }
+}
+
+static int
+FutureObj_set_log_traceback(FutureObj *fut, PyObject *val)
+{
+    int is_true = PyObject_IsTrue(val);
+    if (is_true < 0) {
+        return -1;
+    }
+    fut->fut_log_tb = is_true;
+    return 0;
 }
 
 static PyObject *
@@ -882,7 +902,8 @@ static PyMethodDef FutureType_methods[] = {
     {"_callbacks", (getter)FutureObj_get_callbacks, NULL, NULL},              \
     {"_result", (getter)FutureObj_get_result, NULL, NULL},                    \
     {"_exception", (getter)FutureObj_get_exception, NULL, NULL},              \
-    {"_log_traceback", (getter)FutureObj_get_log_traceback, NULL, NULL},      \
+    {"_log_traceback", (getter)FutureObj_get_log_traceback,                   \
+                       (setter)FutureObj_set_log_traceback, NULL},            \
     {"_source_traceback", (getter)FutureObj_get_source_traceback, NULL, NULL},
 
 static PyGetSetDef FutureType_getsetlist[] = {
@@ -949,6 +970,8 @@ FutureObj_dealloc(PyObject *self)
             return;
         }
     }
+
+    PyObject_GC_UnTrack(self);
 
     if (fut->fut_weakreflist != NULL) {
         PyObject_ClearWeakRefs(self);
@@ -1568,6 +1591,8 @@ static PyObject *
 _asyncio_Task_cancel_impl(TaskObj *self)
 /*[clinic end generated code: output=6bfc0479da9d5757 input=13f9bf496695cb52]*/
 {
+    self->task_log_tb = 0;
+
     if (self->task_state != STATE_PENDING) {
         Py_RETURN_FALSE;
     }
@@ -1822,6 +1847,8 @@ TaskObj_dealloc(PyObject *self)
         }
     }
 
+    PyObject_GC_UnTrack(self);
+
     if (task->task_weakreflist != NULL) {
         PyObject_ClearWeakRefs(self);
     }
@@ -1984,6 +2011,16 @@ task_step_impl(TaskObj *task, PyObject *exc)
         if (_PyGen_FetchStopIterationValue(&o) == 0) {
             /* The error is StopIteration and that means that
                the underlying coroutine has resolved */
+            if (task->task_must_cancel) {
+                // Task is cancelled right before coro stops.
+                Py_DECREF(o);
+                task->task_must_cancel = 0;
+                et = asyncio_CancelledError;
+                Py_INCREF(et);
+                ev = NULL;
+                tb = NULL;
+                goto set_exception;
+            }
             PyObject *res = future_set_result((FutureObj*)task, o);
             Py_DECREF(o);
             if (res == NULL) {
@@ -2001,6 +2038,8 @@ task_step_impl(TaskObj *task, PyObject *exc)
 
         /* Some other exception; pop it and call Task.set_exception() */
         PyErr_Fetch(&et, &ev, &tb);
+
+set_exception:
         assert(et);
         if (!ev || !PyObject_TypeCheck(ev, (PyTypeObject *) et)) {
             PyErr_NormalizeException(&et, &ev, &tb);

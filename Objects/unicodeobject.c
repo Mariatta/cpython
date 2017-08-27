@@ -3017,6 +3017,37 @@ PyUnicode_AsWideCharString(PyObject *unicode,
     return buffer;
 }
 
+wchar_t*
+_PyUnicode_AsWideCharString(PyObject *unicode)
+{
+    const wchar_t *wstr;
+    wchar_t *buffer;
+    Py_ssize_t buflen;
+
+    if (unicode == NULL) {
+        PyErr_BadInternalCall();
+        return NULL;
+    }
+
+    wstr = PyUnicode_AsUnicodeAndSize(unicode, &buflen);
+    if (wstr == NULL) {
+        return NULL;
+    }
+    if (wcslen(wstr) != (size_t)buflen) {
+        PyErr_SetString(PyExc_ValueError,
+                        "embedded null character");
+        return NULL;
+    }
+
+    buffer = PyMem_NEW(wchar_t, buflen + 1);
+    if (buffer == NULL) {
+        PyErr_NoMemory();
+        return NULL;
+    }
+    memcpy(buffer, wstr, (buflen + 1) * sizeof(wchar_t));
+    return buffer;
+}
+
 #endif /* HAVE_WCHAR_H */
 
 PyObject *
@@ -3902,6 +3933,7 @@ PyUnicode_FSDecoder(PyObject* arg, void* addr)
     PyObject *output = NULL;
     if (arg == NULL) {
         Py_DECREF(*(PyObject**)addr);
+        *(PyObject**)addr = NULL;
         return 1;
     }
 
@@ -4130,6 +4162,20 @@ Py_UNICODE *
 PyUnicode_AsUnicode(PyObject *unicode)
 {
     return PyUnicode_AsUnicodeAndSize(unicode, NULL);
+}
+
+const Py_UNICODE *
+_PyUnicode_AsUnicode(PyObject *unicode)
+{
+    Py_ssize_t size;
+    const Py_UNICODE *wstr;
+
+    wstr = PyUnicode_AsUnicodeAndSize(unicode, &size);
+    if (wstr && wcslen(wstr) != (size_t)size) {
+        PyErr_SetString(PyExc_ValueError, "embedded null character");
+        return NULL;
+    }
+    return wstr;
 }
 
 
@@ -5467,13 +5513,12 @@ _PyUnicode_EncodeUTF32(PyObject *str,
         /* four bytes are reserved for each surrogate */
         if (moreunits > 1) {
             Py_ssize_t outpos = out - (uint32_t*) PyBytes_AS_STRING(v);
-            Py_ssize_t morebytes = 4 * (moreunits - 1);
-            if (PyBytes_GET_SIZE(v) > PY_SSIZE_T_MAX - morebytes) {
+            if (moreunits >= (PY_SSIZE_T_MAX - PyBytes_GET_SIZE(v)) / 4) {
                 /* integer overflow */
                 PyErr_NoMemory();
                 goto error;
             }
-            if (_PyBytes_Resize(&v, PyBytes_GET_SIZE(v) + morebytes) < 0)
+            if (_PyBytes_Resize(&v, PyBytes_GET_SIZE(v) + 4 * (moreunits - 1)) < 0)
                 goto error;
             out = (uint32_t*) PyBytes_AS_STRING(v) + outpos;
         }
@@ -5819,13 +5864,12 @@ _PyUnicode_EncodeUTF16(PyObject *str,
         /* two bytes are reserved for each surrogate */
         if (moreunits > 1) {
             Py_ssize_t outpos = out - (unsigned short*) PyBytes_AS_STRING(v);
-            Py_ssize_t morebytes = 2 * (moreunits - 1);
-            if (PyBytes_GET_SIZE(v) > PY_SSIZE_T_MAX - morebytes) {
+            if (moreunits >= (PY_SSIZE_T_MAX - PyBytes_GET_SIZE(v)) / 2) {
                 /* integer overflow */
                 PyErr_NoMemory();
                 goto error;
             }
-            if (_PyBytes_Resize(&v, PyBytes_GET_SIZE(v) + morebytes) < 0)
+            if (_PyBytes_Resize(&v, PyBytes_GET_SIZE(v) + 2 * (moreunits - 1)) < 0)
                 goto error;
             out = (unsigned short*) PyBytes_AS_STRING(v) + outpos;
         }
@@ -6505,6 +6549,10 @@ _PyUnicode_DecodeUnicodeInternal(const char *s,
                      1))
         return NULL;
 
+    if (size < 0) {
+        PyErr_BadInternalCall();
+        return NULL;
+    }
     if (size == 0)
         _Py_RETURN_UNICODE_EMPTY();
 
@@ -7304,6 +7352,10 @@ decode_code_page_stateful(int code_page,
 
     if (code_page < 0) {
         PyErr_SetString(PyExc_ValueError, "invalid code page number");
+        return NULL;
+    }
+    if (size < 0) {
+        PyErr_BadInternalCall();
         return NULL;
     }
 
@@ -11701,7 +11753,11 @@ unicode_hash(PyObject *self)
 PyDoc_STRVAR(index__doc__,
              "S.index(sub[, start[, end]]) -> int\n\
 \n\
-Like S.find() but raise ValueError when the substring is not found.");
+Return the lowest index in S where substring sub is found, \n\
+such that sub is contained within S[start:end].  Optional\n\
+arguments start and end are interpreted as in slice notation.\n\
+\n\
+Raises ValueError when the substring is not found.");
 
 static PyObject *
 unicode_index(PyObject *self, PyObject *args)
@@ -12758,7 +12814,11 @@ unicode_rfind(PyObject *self, PyObject *args)
 PyDoc_STRVAR(rindex__doc__,
              "S.rindex(sub[, start[, end]]) -> int\n\
 \n\
-Like S.rfind() but raise ValueError when the substring is not found.");
+Return the highest index in S where substring sub is found,\n\
+such that sub is contained within S[start:end].  Optional\n\
+arguments start and end are interpreted as in slice notation.\n\
+\n\
+Raises ValueError when the substring is not found.");
 
 static PyObject *
 unicode_rindex(PyObject *self, PyObject *args)
@@ -13915,10 +13975,11 @@ unicode_subscript(PyObject* self, PyObject* item)
         int src_kind, dest_kind;
         Py_UCS4 ch, max_char, kind_limit;
 
-        if (PySlice_GetIndicesEx(item, PyUnicode_GET_LENGTH(self),
-                                 &start, &stop, &step, &slicelength) < 0) {
+        if (PySlice_Unpack(item, &start, &stop, &step) < 0) {
             return NULL;
         }
+        slicelength = PySlice_AdjustIndices(PyUnicode_GET_LENGTH(self),
+                                            &start, &stop, step);
 
         if (slicelength <= 0) {
             _Py_RETURN_UNICODE_EMPTY();
