@@ -41,3 +41,5 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: run bedevere actions
       uses: mariatta/bedevere@gh-actions
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
