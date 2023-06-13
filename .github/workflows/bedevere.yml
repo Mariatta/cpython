@@ -40,4 +40,4 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     - name: run bedevere actions
-      uses: mariatta/bedevere@6c0af4317c85e505530d8a027b970ef9f9c642b4
+      uses: mariatta/bedevere@gh-actions
