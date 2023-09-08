@@ -1,0 +1,44 @@
+name: Bedevere
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - labeled
+      - unlabeled
+      - review_requested
+      - ready_for_review
+      - converted_to_draft
+      - closed
+  create:
+    types:
+      - branch
+  pull_request_review:
+    types:
+      - submitted
+      - dismissed
+  issue_comment:
+    types:
+      - created
+  push:
+
+jobs:
+  pr_check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    steps:
+    - name: Check out repo
+      uses: actions/checkout@v3
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: run bedevere actions
+      uses: mariatta/bedevere@gh-actions
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
